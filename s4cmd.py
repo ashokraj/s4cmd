@@ -23,6 +23,7 @@ Super S3 command line tool.
 
 import sys, os, re, optparse, multiprocessing, fnmatch, time, hashlib, errno, pytz
 import logging, traceback, types, threading, random, socket, shlex, datetime, json
+import urllib3
 
 IS_PYTHON2 = sys.version_info[0] == 2
 
@@ -271,7 +272,7 @@ class BotoClient(object):
   S3RetryableErrors = (
     socket.timeout,
     socket.error if IS_PYTHON2 else ConnectionError,
-    botocore.vendored.requests.packages.urllib3.exceptions.ReadTimeoutError,
+    urllib3.exceptions.ReadTimeoutError,
     botocore.exceptions.IncompleteReadError
   )
 
@@ -541,7 +542,7 @@ class ThreadPool(object):
           self.pool.tasks.terminate(e)
           fail('[Exception] ', exc_info=e)
         finally:
-          self.pool.processed()
+          ## self.pool.processed()
           self.pool.tasks.task_done()
 
   def __init__(self, thread_class, opt):
@@ -607,10 +608,10 @@ class ThreadPool(object):
     '''Increase the processed task counter and show progress message'''
     self.processed_tasks += 1
     qsize = self.tasks.qsize()
-    if qsize > 0:
-      progress('[%d task(s) completed, %d remaining, %d thread(s)]', self.processed_tasks, qsize, len(self.workers))
-    else:
-      progress('[%d task(s) completed, %d thread(s)]', self.processed_tasks, len(self.workers))
+    ## if qsize > 0:
+    ##  progress('[%d task(s) completed, %d remaining, %d thread(s)]', self.processed_tasks, qsize, len(self.workers))
+    ## else:
+    ##  progress('[%d task(s) completed, %d thread(s)]', self.processed_tasks, len(self.workers))
 
 class S3Handler(object):
   '''Core S3 class.
@@ -655,7 +656,7 @@ class S3Handler(object):
       config = ConfigParser.ConfigParser()
       config.read(s3cfg_path)
       keys = config.get("default", "access_key"), config.get("default", "secret_key")
-      debug("read S3 keys from %s file", s3cfg_path)
+      debug("read S3 keys from $HOME/.s3cfg file")
       return keys
     except Exception as e:
       info("could not read S3 keys from %s file; skipping (%s)", s3cfg_path, e)
@@ -786,6 +787,7 @@ class S3Handler(object):
   @log_calls
   def put_single_file(self, pool, source, target):
     '''Upload a single file or a directory by adding a task into queue'''
+
     if os.path.isdir(source):
       if self.opt.recursive:
         for f in (f for f in self.local_walk(source) if not os.path.isdir(f)):
@@ -808,9 +810,9 @@ class S3Handler(object):
     pool = ThreadPool(ThreadUtil, self.opt)
     if not isinstance(source, list):
       source = [source]
-
     if target[-1] == PATH_SEP:
       for src in source:
+        message("Source: %s" % src)  
         self.put_single_file(pool, src, os.path.join(target, self.get_basename(src)))
     else:
       if len(source) == 1:
@@ -1024,13 +1026,20 @@ class S3Handler(object):
     '''Sync files to S3. Does implement deletions if syncing TO s3.
        Currently identical to get/put -r -f --sync-check with exception of deletions.
     '''
+    global uploaded_count 
+    global uploaded_size 
+
+    uploaded_count = 0 
+    uploaded_size = 0
+
     src_s3_url = S3URL.is_valid(source)
     dst_s3_url = S3URL.is_valid(target)
 
     if src_s3_url and not dst_s3_url:
       self.get_files(source, target)
     elif not src_s3_url and dst_s3_url:
-      self.put_files(source, target)
+      self.put_files(source, target)  
+      message("Uploaded count: %d, size: %d" % (uploaded_count,uploaded_size ))
       if self.opt.delete_removed:
         self.delete_removed_files(source, target)
     elif src_s3_url and dst_s3_url:
@@ -1311,6 +1320,8 @@ class ThreadUtil(S3Handler, ThreadPool.Worker):
     '''Thread worker for upload operation.'''
     s3url = S3URL(target)
     obj = self.lookup(s3url)
+    global uploaded_count
+    global uploaded_size
 
     # Initialization: Set up multithreaded uploads.
     if not mpi:
@@ -1318,23 +1329,27 @@ class ThreadUtil(S3Handler, ThreadPool.Worker):
       md5cache = LocalMD5Cache(source)
 
       # optional checks
-      if self.opt.dry_run:
-        message('%s => %s', source, target)
-        return
-      elif self.opt.sync_check and self.sync_check(md5cache, obj):
-        message('%s => %s (synced)', source, target)
+      if self.opt.sync_check and self.sync_check(md5cache, obj):
+        ## message('%s => %s (synced)', source, target)
         return
       elif not self.opt.force and obj:
         raise Failure('File already exists: %s' % target)
 
       if fsize < self.opt.max_singlepart_upload_size:
-        data = self.read_file_chunk(source, 0, fsize)
+        data = self.read_file_chunk(source, 0, fsize) 
+
+        uploaded_count+=1
+        uploaded_size+=fsize
+
+        if self.opt.dry_run:
+           return
+
         self.s3.put_object(Bucket=s3url.bucket,
                            Key=s3url.path,
                            Body=data,
                            Metadata={'md5': md5cache.get_md5(),
                                      'privilege': self.get_file_privilege(source)})
-        message('%s => %s', source, target)
+
         return
 
       # Here we need to have our own md5 value because multipart upload calculates
@@ -1397,7 +1412,7 @@ class ThreadUtil(S3Handler, ThreadPool.Worker):
         message('%s => %s', source, target)
         return
       elif self.opt.sync_check and self.sync_check(LocalMD5Cache(target), obj):
-        message('%s => %s (synced)', source, target)
+        ## message('%s => %s (synced)', source, target)
         return
       elif not self.opt.force and os.path.exists(target):
         raise Failure('File already exists: %s' % target)

@@ -982,6 +982,13 @@ class S3Handler(object):
   @log_calls
   def dsync_files(self, source, target):
     '''Sync directory to directory.'''
+
+    global uploaded_count 
+    global uploaded_size 
+
+    uploaded_count = 0 
+    uploaded_size = 0
+
     src_s3_url = S3URL.is_valid(source)
     dst_s3_url = S3URL.is_valid(target)
 
